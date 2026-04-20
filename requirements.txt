@@ -1,0 +1,5 @@
+torch
+tiktoken
+aiogram
+bitsandbytes
+math
