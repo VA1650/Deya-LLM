@@ -1,4 +1,4 @@
-# 𝙳𝚎𝚢𝚊 𝙻𝙻𝙼 (𝙳𝚎𝚢𝚊 𝚟𝟷.𝟶) 𓆘
+# 𝙳𝚎𝚢𝚊 𝙻𝙻𝙼 (𝙳𝚎𝚢𝚊 𝚟𝟷.𝟶) 
 
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)
