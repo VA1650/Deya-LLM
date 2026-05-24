@@ -5,111 +5,160 @@ import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.chat_action import ChatActionSender
+
 from model import GPT
 
-# ================= КОНФИГУРАЦИЯ =================
-TOKEN = 'ТВОЙ_ТОКЕН_БОТА'
-ADMIN_IDS = [ТВОЙ_ID] 
+# ================= CONFIG =================
+TOKEN = ""
+ADMIN_IDS = [] 
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Параметры должны совпадать с обучением
 D_MODEL = 1024
 HEADS = 16
 LAYERS = 32
 BLOCK_SIZE = 1024
 VOCAB = 50257
-MODEL_PATH = 'last.pt'
+MODEL_PATH = "last.pt"
 
+# ================= TOKENIZER =================
 enc = tiktoken.get_encoding("gpt2")
-def encode(t): return enc.encode(t, allowed_special={"<|endoftext|>"}, disallowed_special=())
-def decode(t): return enc.decode(t)
 
-# ================= ЗАГРУЗКА МОДЕЛИ =================
+def encode(text):
+    return enc.encode(text, allowed_special={"<|endoftext|>"})
 
-if os.path.exists(MODEL_PATH):
-    print("Загрузка...")
-    ckpt = torch.load(MODEL_PATH, map_location=DEVICE)
-    
-    # Создаем модель через класс из model.py
-    model = GPT(VOCAB, D_MODEL, HEADS, LAYERS, BLOCK_SIZE).to(DEVICE)
-    
-    # Загружаем веса (учитываем, что в last.pt лежит словарь с 'model', 'opt' и т.д.)
-    state_dict = ckpt['model'] if 'model' in ckpt else ckpt
-    model.load_state_dict(state_dict, strict=False)
-    model.eval()
-    print("✅ Дея v10.6 готова к общению!")
-else:
-    exit(f"❌ Ошибка: Файл {MODEL_PATH} не найден")
+def decode(tokens):
+    return enc.decode(tokens)
 
-# ================= ЛОГИКА БОТА =================
+# ================= LOAD MODEL =================
+print("🤖 loading model...")
 
+ckpt = torch.load(MODEL_PATH, map_location=DEVICE)
+
+model = GPT(VOCAB, D_MODEL, HEADS, LAYERS, BLOCK_SIZE).to(DEVICE)
+
+state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+model.load_state_dict(state, strict=False)
+
+model.eval()
+print("✅ model ready")
+
+# ================= BOT =================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
 user_history = {}
 
-@dp.message(Command("clear"))
-async def cmd_clear(message: types.Message):
-    user_history[message.from_user.id] = ""
-    await message.answer("Память очищена")
+# ================= SAFETY TOKENS =================
+BAD_TOKENS = set(
+    enc.encode("[USER]") +
+    enc.encode("[AGENT]") +
+    [enc.eot_token]
+)
 
-@dp.message()
-async def handle_chat(message: types.Message):
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS: return
+# ================= GENERATION =================
+def generate_stream(model, idx, max_new_tokens=200, temperature=0.6):
+    tokens = []
 
-    # Формируем историю. Если в обучении были [USER] и [AGENT], используем их.
-    history = user_history.get(uid, "")
-    prompt = f"{history}[USER] {message.text}\n[AGENT] "
-    
-    async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-        # Кодируем и следим за размером окна контекста
-        tokens_raw = encode(prompt)
-        if len(tokens_raw) > BLOCK_SIZE - 200:
-            tokens_raw = tokens_raw[-(BLOCK_SIZE - 200):]
-            
-        idx = torch.tensor([tokens_raw], device=DEVICE)
-        
-        # Генерация 
-        loop = asyncio.get_event_loop()
-        with torch.no_grad():
-            out = await loop.run_in_executor(None, lambda: model_generate(model, idx, 150))
-        
-        # Декодируем только то, что дописала модель
-        new_tokens = out[0, idx.size(1):].tolist()
-        full_reply = decode(new_tokens).strip()
-        reply = full_reply.split("[USER]")[0].split("[AGENT]")[0].strip()
-        
-        # Обновляем историю для следующего шага
-        user_history[uid] = f"{prompt}{reply}\n"[-1500:]
-        
-        if reply:
-            await message.reply(reply)
-        else:
-            await message.answer("...")
+    for i in range(max_new_tokens):
 
-def model_generate(model, idx, max_new_tokens, temperature=0.6):
-    for _ in range(max_new_tokens):
         idx_cond = idx[:, -BLOCK_SIZE:]
+
         logits, _ = model(idx_cond)
         logits = logits[:, -1, :] / temperature
-        
-        # Top-K
-        v, _ = torch.topk(logits, min(50, logits.size(-1)))
-        logits[logits < v[:, [-1]]] = -float('Inf')
-        
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        idx_next = torch.multinomial(probs, num_samples=1)
-        
-        if idx_next.item() == 50256: # Конец текста
-            break
-        idx = torch.cat((idx, idx_next), dim=1)
-    return idx
 
+        # Top-K filtering
+        top_k = 100
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        logits[logits < v[:, [-1]]] = -float("inf")
+
+        probs = torch.softmax(logits, dim=-1)
+        idx_next = torch.multinomial(probs, num_samples=1)
+
+        token_id = idx_next.item()
+
+        # STOP CONDITIONS
+        if token_id in BAD_TOKENS:
+            break
+
+        idx = torch.cat((idx, idx_next), dim=1)
+        tokens.append(token_id)
+
+        # stream step
+        if i % 4 == 0:
+            yield tokens.copy(), idx
+
+    yield tokens, idx
+
+
+# ================= HANDLER =================
+@dp.message(Command("clear"))
+async def clear(message: types.Message):
+    user_history[message.from_user.id] = ""
+    await message.answer("🧹 cleared")
+
+
+@dp.message()
+async def chat(message: types.Message):
+
+    uid = message.from_user.id
+    if uid not in ADMIN_IDS:
+        return
+
+    history = user_history.get(uid, "")
+
+    prompt = f"{history}[USER] {message.text}\n[AGENT] "
+
+    tokens = encode(prompt)
+    tokens = tokens[-(BLOCK_SIZE - 200):]
+
+    idx = torch.tensor([tokens], device=DEVICE)
+
+    msg = await message.answer("💭 thinking...")
+
+    loop = asyncio.get_event_loop()
+
+    def run():
+        return list(generate_stream(model, idx, 200))
+
+    results = await loop.run_in_executor(None, run)
+
+    last_text = ""
+
+    for token_buf, _ in results:
+
+        try:
+            text = decode(token_buf)
+        except:
+            continue
+
+        # cleanup (страховка от мусора)
+        text = text.replace("[USER]", "").replace("[AGENT]", "").strip()
+
+        if text == last_text:
+            continue
+
+        last_text = text
+
+        try:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=msg.message_id,
+                text=text[-3800:]
+            )
+        except:
+            pass
+
+    reply = last_text.strip()
+
+    user_history[uid] = (prompt + reply + "\n")[-2000:]
+
+
+# ================= RUN =================
 async def main():
+    print("🚀 bot running")
     await dp.start_polling(bot)
 
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Бот выключен.")
+    asyncio.run(main())
