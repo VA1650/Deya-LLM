@@ -1,44 +1,42 @@
-# 𝙳𝚎𝚢𝚊 𝙻𝙻𝙼 (𝙳𝚎𝚢𝚊 𝚟𝟷.𝟶) 
+# 🧠 DeiaGPT: Custom Language Model Research
 
 ![Python](https://img.shields.io/badge/python-3.9+-blue.svg)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**Deya** — это компактная, но мощная языковая модель на архитектуре Transformer, написанная с нуля на PyTorch. Проект включает в себя полный цикл: от кастомной реализации архитектуры с использованием RoPE до инференса через Telegram-бота.
+An architectural deep dive into training custom autoregressive Transformers using FlashAttention, Rotary Position Embeddings (RoPE), and deep memory optimization techniques.
 
-## 🚀 Основные характеристики
+---
 
-Архитектура модели оптимизирована для работы на потребительских GPU и включает:
-* **Глубина:** 32 трансформерных слоя.
-* **Размерность:** 1024.
-* **Attention:** Multi-Head Attention (16 голов).
-* **RoPE:** Эффективная обработка позиционной информации.
-* **RMSNorm:** Использование RMS-нормализации для стабильного обучения.
-* **Efficiency:** Использование bitsandbytes и градиентного чекпоинтинга для экономии VRAM.
+## 📊 Architectural Evolution: V9 vs V10
 
-## 📁 Структура проекта
+This project documents a classic LLM engineering trade-off: scaling model capacity vs. maintaining convergence quality under strict hardware constraints.
 
-* **model.py** — ядро проекта: реализация классов GPT, Block, RMSNorm и логики RoPE.
-* **train.py** — скрипт для обучения модели с поддержкой автоматических чекпоинтов.
-* **bot.py** — Telegram-бот для интерактивного общения с обученной моделью.
-* **requirements.txt** — необходимые зависимости для быстрого старта.
+| Feature / Metric | Version 9 (Stable Baseline) | Version 10 (Experimental Large) |
+| :--- | :--- | :--- |
+| **Model Size** | ~130M+ parameters ($d_{model}=768$, 32 layers) | ~300M+ parameters ($d_{model}=1024$, 32 layers) |
+| **Attention** | Native PyTorch SDPA (FlashAttention enabled) | Optimized SDPA via explicit RoPE indexing |
+| **Optimizer** | FP32 `AdamW` (High fidelity) | `AdamW8bit` (BitsAndBytes memory-optimized) |
+| **LR Scheduling** | Constant ($1e-4$) | Cosine Decay with Warmup ($3e-4 \to 3e-5$) |
+| **Batch Config** | Effective Batch: 32 ($4 \times 8$) | Effective Batch: 64 ($1 \times 64$) |
+| **Output Quality** | 🏆 **High coherence, stable text generation** | Lower text quality (potential underfitting) |
 
-## 🛠️ Установка и запуск
+---
 
-1. Клонируйте репозиторий.
-2. Установите зависимости: `pip install -r requirements.txt`
-3. Подготовьте данные: Положите текстовый файл для обучения в корень проекта под именем **input.txt**.
-4. Запуск обучения: `python train.py`
-5. Запуск бота: Укажите ваш TOKEN и ADMIN_IDS в **bot.py** и запустите: `python bot.py`
+## 🔬 Critical Post-Mortem & Engineering Insights
 
-## 📈 Результаты обучения
+### 1. The V9 VRAM Leak / Slowdown Bug
+* **The Problem:** Resuming training from checkpoint in V9 caused a 10x performance drop and memory bloating.
+* **The Root Cause:** Standard FP32 `AdamW` allocates internal momentum tensors equal to $2 \times$ model parameters. Reloading the state dict caused severe CUDA memory fragmentation on the GPU, breaking subsequent memory allocations.
 
-Модель показывает уверенное снижение лосса при обучении на диалоговых датасетах.
-* **Target Loss:** < 0.8
-* **Оптимизатор:** AdamW 8-bit
+### 2. Why V10 Underperformed Despite Superior Architecture
+* **Parameter/Data Mismatch:** Doubling the embedding size ($768 \to 1024$) vastly increased the model's capacity. For small to mid-sized text datasets (`input.txt`), the model required significantly more training tokens to properly align its latent space.
+* **8-bit Quantization Trade-off:** While `AdamW8bit` successfully resolved the V9 memory fragmentation bug and allowed training a larger model on a single GPU, the quantization noise in gradient updates slightly degraded fine-grained token predictions.
+* **Batch Size Variance:** Dropping the micro-batch size to $1$ (with 64 accumulation steps) increased gradient variance during backward passes, creating sub-optimal update steps when combined with 8-bit optimizer states.
 
-> **Note:** Веса модели (.pt) и файл данных (input.txt) исключены из репозитория через .gitignore.
+---
 
-## 🧩 Особенности реализации
-
-В проекте реализованы **Rotary Positional Embeddings**, что позволяет модели лучше масштабировать контекст и понимать структуру длинных предложений.
+## 🛠 Features Implemented
+* **RoPE (Rotary Position Embeddings):** Replaced absolute positional encodings with relative rotary embeddings for enhanced context extrapolation.
+* **Memory Management:** Integrated PyTorch Gradient Checkpointing (`use_reentrant=False`) across all 32 layers to enable deep architecture training on consumer hardware.
+* **Stability Enhancements:** Pre-LayerNorm architecture using `RMSNorm` instead of standard `LayerNorm` to prevent gradient explosion.
