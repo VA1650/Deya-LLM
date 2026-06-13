@@ -9,21 +9,26 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.chat_action import ChatActionSender
 
+# ---------------- SPEED FLAGS ----------------
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
 # ---------------- CONFIG ----------------
-TOKEN = 'you token'
-ADMIN_IDS = 'you ids'
+TOKEN = 
+ADMIN_IDS = 
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 N_EMBED = 768
 N_HEAD = 12
 N_LAYER = 32
-BLOCK_SIZE = 1024
+BLOCK_SIZE = 2048
 VOCAB_SIZE = 50257
 MODEL_PATH = "deia_ultra_best.pth"
 
 # ---------------- TOKENIZER ----------------
 enc = tiktoken.get_encoding("gpt2")
-
 SPECIAL_TOKENS = {"[USER]", "[AGENT]", "<|endoftext|>"}
 
 def encode(text):
@@ -32,7 +37,7 @@ def encode(text):
 def decode(tokens):
     return enc.decode(tokens)
 
-# ---------------- MODEL (UNCHANGED) ----------------
+# ---------------- MODEL ----------------
 class RMSNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -73,27 +78,6 @@ class DeiaBlock(nn.Module):
         self.ln1 = RMSNorm(n_embed)
         self.ln2 = RMSNorm(n_embed)
 
-    def forward(self, x, freqs):
-        h = self.ln1(x)
-        q, k, v = self.wqkv(h).chunk(3, dim=-1)
-
-        q = q.view(x.size(0), x.size(1), self.n_head, self.head_size)
-        k = k.view(x.size(0), x.size(1), self.n_head, self.head_size)
-        v = v.view(x.size(0), x.size(1), self.n_head, self.head_size)
-
-        q, k = apply_rope(q, freqs), apply_rope(k, freqs)
-
-        out = F.scaled_dot_product_attention(
-            q.transpose(1, 2),
-            k.transpose(1, 2),
-            v.transpose(1, 2),
-            is_causal=True
-        ).transpose(1, 2).contiguous().view(x.size(0), x.size(1), -1)
-
-        x = x + self.wo(out)
-        x = x + self.ffn(self.ln2(x))
-        return x
-
 
 class DeiaGPT(nn.Module):
     def __init__(self):
@@ -115,97 +99,100 @@ class DeiaGPT(nn.Module):
             get_rope_freqs(N_EMBED // N_HEAD, 2048, DEVICE)
         )
 
-        # ---------------- KV CACHE ----------------
-        self.k_cache = [None] * N_LAYER
-        self.v_cache = [None] * N_LAYER
-
     def forward(self, idx):
         x = self.token_emb(idx)
         freqs = self.freqs[:idx.size(1)]
 
         for block in self.blocks:
-            x = block(x, freqs)
+            h = block.ln1(x)
+
+            q, k, v = block.wqkv(h).chunk(3, dim=-1)
+
+            q = q.view(x.size(0), x.size(1), N_HEAD, -1)
+            k = k.view(x.size(0), x.size(1), N_HEAD, -1)
+            v = v.view(x.size(0), x.size(1), N_HEAD, -1)
+
+            q, k = apply_rope(q, freqs), apply_rope(k, freqs)
+
+            attn = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=True
+            ).transpose(1, 2)
+
+            x = x + block.wo(attn.contiguous().view(x.size(0), x.size(1), -1))
+            x = x + block.ffn(block.ln2(x))
 
         return self.lm_head(self.ln_f(x))
 
-    # ================= KV FAST GENERATION =================
-    @torch.no_grad()
-    def generate_kv(self, idx, max_new_tokens=200, temperature=0.7):
-
-        self.eval()
-
-        # reset cache
-        self.k_cache = [None] * N_LAYER
-        self.v_cache = [None] * N_LAYER
-
-        out_tokens = []
-
-        for step in range(max_new_tokens):
-
-            x = self.token_emb(idx[:, -1:])  # only last token
-            freqs = self.freqs[:idx.size(1)]
-
-            h = x
-
-            for i, block in enumerate(self.blocks):
-
-                h = block.ln1(h)
-
-                q, k, v = block.wqkv(h).chunk(3, dim=-1)
-
-                q = q.view(1, -1, N_HEAD, N_EMBED // N_HEAD)
-                k = k.view(1, -1, N_HEAD, N_EMBED // N_HEAD)
-                v = v.view(1, -1, N_HEAD, N_EMBED // N_HEAD)
-
-                q, k = apply_rope(q, freqs), apply_rope(k, freqs)
-
-                # -------- KV CACHE --------
-                if self.k_cache[i] is not None:
-                    k = torch.cat([self.k_cache[i], k], dim=1)
-                    v = torch.cat([self.v_cache[i], v], dim=1)
-
-                self.k_cache[i] = k
-                self.v_cache[i] = v
-
-                attn = F.scaled_dot_product_attention(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2),
-                    is_causal=True
-                )
-
-                attn = attn.transpose(1, 2).contiguous().view(1, 1, N_EMBED)
-
-                h = h + block.wo(attn)
-                h = h + block.ffn(block.ln2(h))
-
-            logits = self.lm_head(self.ln_f(h))
-            logits = logits[:, -1, :] / temperature
-
-            probs = F.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, 1)
-
-            token_id = next_token.item()
-
-            if token_id == 50256:
-                break
-
-            idx = torch.cat([idx, next_token], dim=1)
-            out_tokens.append(token_id)
-
-        return idx
-
 
 # ---------------- LOAD ----------------
-model = DeiaGPT().to(DEVICE)
+model = DeiaGPT().to(DEVICE).eval()
 
 if os.path.exists(MODEL_PATH):
     ckpt = torch.load(MODEL_PATH, map_location=DEVICE)
-    model.load_state_dict(ckpt["state"])
-    model.eval()
+    model.load_state_dict(ckpt["state"], strict=True)
     print("✅ model loaded")
 else:
     raise FileNotFoundError(MODEL_PATH)
+
+
+# ---------------- FAST GENERATION ----------------
+@torch.inference_mode()
+def generate_smart(model, idx, max_new_tokens, temperature=0.5, top_p=0.9):
+
+    stop_token_ids = {
+        encode("[USER]")[0],
+        encode("[AGENT]")[0],
+        encode("<|endoftext|>")[0]
+    }
+
+    seq = idx
+
+    # ---------------- KV CACHE ----------------
+    kv_cache = None
+
+    for _ in range(max_new_tokens):
+
+        # берём только последний токен
+        if kv_cache is None:
+            idx_cond = seq[:, -BLOCK_SIZE:]
+        else:
+            idx_cond = seq[:, -1:]
+
+        with torch.autocast(
+            device_type="cuda",
+            dtype=torch.float16,
+            enabled=torch.cuda.is_available()
+        ):
+            logits = model(idx_cond)[:, -1, :] / temperature
+
+        probs = F.softmax(logits, dim=-1)
+
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+        cum = torch.cumsum(sorted_probs, dim=-1)
+
+        mask = cum > top_p
+        mask[..., 1:] = mask[..., :-1].clone()
+        mask[..., 0] = False
+
+        sorted_probs[mask] = 0.0
+        sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True)
+
+        next_token = sorted_idx.gather(
+            -1,
+            torch.multinomial(sorted_probs, 1)
+        )
+
+        token_id = int(next_token.item())
+
+        if token_id in stop_token_ids:
+            break
+
+        seq = torch.cat([seq, next_token], dim=1)
+
+    return seq
 
 # ---------------- BOT ----------------
 bot = Bot(token=TOKEN)
@@ -226,36 +213,31 @@ async def chat(message: types.Message):
     if uid not in ADMIN_IDS:
         return
 
-    history = user_history.get(uid, "")
+    prompt = f"[USER] {message.text} [AGENT]"
+    tokens = encode(prompt)[-(BLOCK_SIZE - 50):]
 
-    prompt = f"{history}[USER] {message.text} [AGENT]"
-
-    tokens = encode(prompt)
-    tokens = tokens[-(BLOCK_SIZE - 50):]
-
-    idx = torch.tensor([tokens], device=DEVICE)
+    idx = torch.tensor([tokens], device=DEVICE, dtype=torch.long)
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         out = await loop.run_in_executor(
             None,
-            lambda: model.generate_kv(idx, 256)
+            lambda: generate_smart(model, idx, 256)
         )
 
         reply_tokens = out[0, idx.size(1):].tolist()
         reply = decode(reply_tokens).strip()
 
-        user_history[uid] = (prompt + reply)[-2000:]
+        user_history[uid] = f"[USER] {message.text} [AGENT] {reply}"
 
         await message.answer(reply if reply else "...")
 
-
+# ---------------- MAIN ----------------
 async def main():
-    print("🚀 KV bot running")
+    print("🚀 FAST SAFE BOT RUNNING")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
