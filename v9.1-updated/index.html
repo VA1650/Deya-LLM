@@ -1,0 +1,542 @@
+ <!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deia AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --primary: #5865F2;
+            --bg: #f5f7fb;
+            --surface: #ffffff;
+            --surface-2: #eef2ff;
+            --border: #d9dde8;
+            --text: #18181b;
+            --text-light: #666;
+            --shadow: 0 8px 30px rgba(0,0,0,.08);
+        }
+
+        body.dark {
+            --primary: #7c8cff;
+            --bg: #111318;
+            --surface: #1a1d24;
+            --surface-2: #252935;
+            --border: #343846;
+            --text: #f5f5f5;
+            --text-light: #a9abb3;
+            --shadow: 0 8px 35px rgba(0,0,0,.35);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            height: 100%;
+        }
+
+        body {
+            height: 100%;
+            background: var(--bg);
+            color: var(--text);
+            font-family: Inter, sans-serif;
+            transition: .25s;
+        }
+
+        .app {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .topbar {
+            height: 64px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 18px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            z-index: 10;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--primary);
+            letter-spacing: .5px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .icon-btn {
+            width: 42px;
+            height: 42px;
+            border: none;
+            border-radius: 12px;
+            background: transparent;
+            color: var(--text);
+            cursor: pointer;
+            transition: .2s;
+            font-size: 18px;
+        }
+
+        .icon-btn:hover {
+            background: rgba(127,127,127,.15);
+        }
+
+        .chat-wrapper {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            overflow: hidden;
+            padding: 20px;
+        }
+
+        .chat {
+            width: min(1100px,100%);
+            display: flex;
+            flex-direction: column;
+            border-radius: 18px;
+            background: var(--surface);
+            overflow: hidden;
+            box-shadow: var(--shadow);
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            scroll-behavior: smooth;
+        }
+
+        .messages::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .messages::-webkit-scrollbar-thumb {
+            background: #b6b6b6;
+            border-radius: 20px;
+        }
+
+        .message {
+            max-width: 78%;
+            padding: 14px 18px;
+            border-radius: 18px;
+            font-size: 15px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            animation: show .18s ease;
+            user-select: text;
+            -webkit-user-select: text;
+        }
+
+        .user-msg {
+            align-self: flex-end;
+            background: var(--primary);
+            color: white;
+            border-bottom-right-radius: 6px;
+        }
+
+        .bot-msg {
+            align-self: flex-start;
+            background: var(--surface-2);
+            border-bottom-left-radius: 6px;
+        }
+
+        @keyframes show {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+            to {
+                opacity: 1;
+                transform: none;
+            }
+        }
+
+        .input-panel {
+            flex-shrink: 0;
+            padding: 18px;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        .input-box {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+
+        #user-input {
+            flex: 1;
+            resize: none;
+            min-height: 52px;
+            max-height: 180px;
+            padding: 14px 18px;
+            border-radius: 18px;
+            border: 1px solid var(--border);
+            outline: none;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 15px;
+            font-family: inherit;
+        }
+
+        #user-input:focus {
+            border-color: var(--primary);
+        }
+
+        #send-btn {
+            width: 52px;
+            height: 52px;
+            border: none;
+            border-radius: 16px;
+            background: var(--primary);
+            color: white;
+            font-size: 22px;
+            cursor: pointer;
+            transition: .2s;
+        }
+
+        #send-btn:hover {
+            transform: translateY(-1px);
+        }
+
+        #send-btn:disabled {
+            opacity: .45;
+            cursor: not-allowed;
+        }
+
+        .typing {
+            display: none;
+            padding: 0 18px 14px;
+        }
+
+        .typing.show {
+            display: block;
+        }
+
+        .typing-dots {
+            display: flex;
+            gap: 5px;
+        }
+
+        .typing-dots span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-light);
+            animation: bounce 1.2s infinite;
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: .2s;
+        }
+
+        .typing-dots span:nth-child(3) {
+            animation-delay: .4s;
+        }
+
+        @keyframes bounce {
+            0%, 80%, 100% {
+                transform: scale(.6);
+                opacity: .4;
+            }
+            40% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .chat-wrapper {
+                padding: 0;
+            }
+
+            .chat {
+                width: 100%;
+                border-radius: 0;
+                box-shadow: none;
+            }
+
+            .messages {
+                padding: 16px;
+            }
+
+            .message {
+                max-width: 90%;
+            }
+
+            .topbar {
+                padding: 0 12px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <header class="topbar">
+            <div class="logo">
+                DEIA CHAT
+            </div>
+
+            <div class="actions">
+                <button class="icon-btn" id="theme-btn" title="Переключить тему">
+                    🌙
+                </button>
+
+                <button class="icon-btn" id="clear-btn" title="Очистить чат">
+                    🗑️
+                </button>
+            </div>
+        </header>
+
+        <main class="chat-wrapper">
+            <section class="chat">
+                <div class="messages" id="messages"></div>
+
+                <div class="typing" id="typing">
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+
+                <div class="input-panel">
+                    <div class="input-box">
+                        <textarea id="user-input" rows="1" placeholder="Напишите сообщение..." autocomplete="off" spellcheck="false"></textarea>
+                        <button id="send-btn" title="Отправить">
+                            ↑
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById("messages");
+        const input = document.getElementById("user-input");
+        const sendBtn = document.getElementById("send-btn");
+        const typing = document.getElementById("typing");
+        const clearBtn = document.getElementById("clear-btn");
+        const themeBtn = document.getElementById("theme-btn");
+
+        /* ---------- тема ---------- */
+        const savedTheme = localStorage.getItem("deia-theme");
+
+        if (savedTheme === "dark") {
+            document.body.classList.add("dark");
+        }
+
+        function updateThemeIcon() {
+            themeBtn.textContent = document.body.classList.contains("dark") ? "☀️" : "🌙";
+        }
+
+        updateThemeIcon();
+
+        themeBtn.addEventListener("click", () => {
+            const dark = document.body.classList.toggle("dark");
+            localStorage.setItem("deia-theme", dark ? "dark" : "light");
+            updateThemeIcon();
+        });
+
+        /* ---------- сохранение истории ---------- */
+        let history = [];
+        const savedHistory = localStorage.getItem("deia-history");
+
+        if (savedHistory) {
+            try {
+                const parsed = JSON.parse(savedHistory);
+                if (Array.isArray(parsed)) {
+                    history = parsed.filter(
+                        msg => msg &&
+                        typeof msg.text === "string" &&
+                        (msg.type === "user" || msg.type === "bot")
+                    );
+
+                    messagesDiv.innerHTML = "";
+                    history.forEach(msg => {
+                        appendMessage(msg.text, msg.type, false);
+                    });
+                }
+            } catch (e) {
+                history = [];
+            }
+        }
+
+        if (history.length === 0) {
+            appendMessage("Привет!\n\nЯ Deia AI.\n\nЧем могу помочь?", "bot", false);
+        }
+
+        function saveHistory() {
+            localStorage.setItem("deia-history", JSON.stringify(history));
+        }
+
+        /* ---------- очистка ---------- */
+        clearBtn.addEventListener("click", () => {
+            if (!confirm("Очистить историю чата?")) return;
+
+            history = [];
+            localStorage.removeItem("deia-history");
+            messagesDiv.innerHTML = "";
+            appendMessage("Привет!\n\nЯ Deia AI.\n\nЧем могу помочь?", "bot", false);
+        });
+
+        /* ---------- textarea ---------- */
+        function resizeInput() {
+            input.style.height = "auto";
+            input.style.height = Math.min(input.scrollHeight, 180) + "px";
+        }
+
+        input.addEventListener("input", resizeInput);
+        resizeInput();
+
+        /* ---------- Enter ---------- */
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        /* ---------- сообщения ---------- */
+        function escapeHtml(text) {
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+        }
+
+        function appendMessage(text, type, save = true) {
+            const div = document.createElement("div");
+            div.className = "message " + (type === "user" ? "user-msg" : "bot-msg");
+            div.dataset.author = type === "user" ? "Я" : "Дея";
+
+            div.innerHTML = escapeHtml(text).replace(/\n/g, "<br>");
+            messagesDiv.appendChild(div);
+
+            if (save) {
+                history.push({ type: type, text: text });
+                saveHistory();
+            }
+
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        /* ---------- индикатор ---------- */
+        function showTyping() {
+            typing.classList.add("show");
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function hideTyping() {
+            typing.classList.remove("show");
+        }
+
+        /* ---------- кнопки ---------- */
+        sendBtn.addEventListener("click", sendMessage);
+        input.focus();
+
+        /* ---------- отправка сообщения ---------- */
+        async function sendMessage() {
+            const text = input.value.trim();
+
+            if (!text) return;
+
+            appendMessage(text, "user", true);
+
+            input.value = "";
+            resizeInput();
+
+            input.disabled = true;
+            sendBtn.disabled = true;
+
+            showTyping();
+
+            try {
+                const response = await fetch("/api/chat", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ message: text })
+                });
+
+                if (!response.ok) {
+                    throw new Error("Ошибка сервера");
+                }
+
+                const data = await response.json();
+                const reply = data.reply ?? "Сервер не вернул ответ.";
+
+                hideTyping();
+                appendMessage(reply, "bot", true);
+            } catch (error) {
+                console.error(error);
+                hideTyping();
+                appendMessage("Не удалось подключиться к серверу.", "bot", true);
+            } finally {
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        /* ---------- копирование выделенных сообщений ---------- */
+        document.addEventListener("copy", event => {
+            const selection = window.getSelection();
+
+            if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+                return;
+            }
+
+            const range = selection.getRangeAt(0);
+
+            const selectedMessages = Array.from(
+                messagesDiv.querySelectorAll(".message")
+            ).filter(message => {
+                try {
+                    return range.intersectsNode(message);
+                } catch (e) {
+                    return false;
+                }
+            });
+
+            if (selectedMessages.length === 0) {
+                return;
+            }
+
+            const copiedText = selectedMessages
+                .map(message => {
+                    const author = message.dataset.author;
+                    const text = message.textContent;
+                    return author + ": " + text;
+                })
+                .join("\n");
+
+            event.preventDefault();
+            event.clipboardData.setData("text/plain", copiedText);
+        });
+    </script>
+</body>
+</html>
