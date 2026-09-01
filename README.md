@@ -43,3 +43,5 @@ This project documents a classic LLM engineering trade-off: trading off sequence
 * **RoPE (Rotary Position Embeddings):** Replaced absolute positional encodings with relative rotary embeddings for enhanced context extrapolation.
 * **Memory Management:** Integrated PyTorch Gradient Checkpointing (`use_reentrant=False`) across layers to enable deep architecture training on consumer hardware.
 * **Stability Enhancements:** Pre-LayerNorm architecture using `RMSNorm` instead of standard `LayerNorm` to prevent gradient explosion.
+
+> more details: https://telegra.ph/EHvolyuciya-odnoj-LLM-ot-cepej-Markova-do-sobstvennoj-Dei-na-300M-parametrov-09-01
