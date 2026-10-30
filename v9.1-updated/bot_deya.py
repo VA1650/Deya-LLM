@@ -10,9 +10,9 @@ from aiogram.filters import Command
 from aiogram.utils.chat_action import ChatActionSender
 
 # ---------------- CONFIG & TOKENS ----------------
-TOKEN = ''
+TOKEN = ""  # Укажите ваш токен бота
+ADMIN_IDS = []  # Укажите ID администраторов
 
-ADMIN_IDS = []
 MODEL_PATH = "deia_checkpoint.pth"  # Имя чекпоинта из нового обучения
 TOKENIZER_PATH = "tokenizer.json"
 
@@ -194,12 +194,13 @@ def generate_smart(model, idx, max_new_tokens, temperature=0.6, top_k=50):
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Хранилище истории диалогов пользователей (список токенов контекста)
 user_history = {}
 
 @dp.message(Command("clear"))
 async def clear(message: types.Message):
-    user_history[message.from_user.id] = ""
-    await message.answer("🧹 история очищена")
+    user_history.pop(message.from_user.id, None)
+    await message.answer("🧹 История диалога очищена")
 
 
 @dp.message()
@@ -208,11 +209,20 @@ async def chat(message: types.Message):
     if uid not in ADMIN_IDS:
         return
 
-    # Правильный промпт под обучающую выборку
-    prompt = f"[USER] {message.text}\n[AGENT] "
-    tokens = encode(prompt)[-(BLOCK_SIZE - 50):]
+    # Формируем текст нового сообщения в правильном формате обучения
+    new_prompt_part = f"[USER] {message.text}\n[AGENT] "
+    new_tokens = encode(new_prompt_part)
 
-    idx = torch.tensor([tokens], device=DEVICE, dtype=torch.long)
+    # Достаем прошлую историю пользователя или создаем пустую
+    history_tokens = user_history.get(uid, [])
+
+    # Объединяем историю и новое сообщение, оставляя место под ответ (BLOCK_SIZE - 50)
+    total_tokens = history_tokens + new_tokens
+    max_history_len = BLOCK_SIZE - 512 - 50  # Оставляем запас под генерацию ответа
+    if len(total_tokens) > max_history_len:
+        total_tokens = total_tokens[-max_history_len:]
+
+    idx = torch.tensor([total_tokens], device=DEVICE, dtype=torch.long)
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         loop = asyncio.get_running_loop()
@@ -222,16 +232,25 @@ async def chat(message: types.Message):
             lambda: generate_smart(model, idx, 512, temperature=0.7, top_k=50)
         )
 
+        # Выделяем только сгенерированные моделью токены ответа
         reply_tokens = out[0, idx.size(1):].tolist()
         reply = decode(reply_tokens)
 
-        # Очистка служебных токенов
+        # Очистка служебных тегов из ответа для пользователя
+        clean_reply = reply
         for tag in ["[USER]", "[AGENT]", "[EOT]", "[EOS]"]:
-            if tag in reply:
-                reply = reply.split(tag)[0]
+            if tag in clean_reply:
+                clean_reply = clean_reply.split(tag)[0]
 
-        reply = reply.strip()
-        await message.answer(reply if reply else "...")
+        clean_reply = clean_reply.strip()
+        
+        # Если модель не сгенерировала EOT, добавим его вручную в историю для корректности цепочки
+        final_reply_tokens = encode(clean_reply + " [EOT]\n")
+        
+        # Обновляем историю пользователя: старая история + новое сообщение пользователя + ответ модели
+        user_history[uid] = total_tokens + reply_tokens + encode(" [EOT]\n")
+
+        await message.answer(clean_reply if clean_reply else "...")
 
 # ---------------- MAIN ----------------
 async def main():
