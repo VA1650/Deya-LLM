@@ -9,8 +9,8 @@ from aiogram.utils.chat_action import ChatActionSender
 from model import GPT
 
 # ================= CONFIG =================
-TOKEN = ""
-ADMIN_IDS = [] 
+TOKEN = ""  # Укажите ваш токен бота
+ADMIN_IDS = []  # Укажите ID администраторов
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -24,8 +24,10 @@ MODEL_PATH = "last.pt"
 # ================= TOKENIZER =================
 enc = tiktoken.get_encoding("gpt2")
 
+SPECIAL_TOKENS = {"[USER]", "[AGENT]", "<|endoftext|>"}
+
 def encode(text):
-    return enc.encode(text, allowed_special={"<|endoftext|>"})
+    return enc.encode(text, allowed_special=SPECIAL_TOKENS)
 
 def decode(tokens):
     return enc.decode(tokens)
@@ -47,21 +49,18 @@ print("✅ model ready")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Храним историю в виде токенов, а не сырого текста!
 user_history = {}
 
 # ================= SAFETY TOKENS =================
-BAD_TOKENS = set(
-    enc.encode("[USER]") +
-    enc.encode("[AGENT]") +
-    [enc.eot_token]
-)
+# Только реальный токен конца текста (никаких разбиений строк)
+BAD_TOKENS = {enc.eot_token}
 
 # ================= GENERATION =================
 def generate_stream(model, idx, max_new_tokens=200, temperature=0.6):
     tokens = []
 
     for i in range(max_new_tokens):
-
         idx_cond = idx[:, -BLOCK_SIZE:]
 
         logits, _ = model(idx_cond)
@@ -94,26 +93,34 @@ def generate_stream(model, idx, max_new_tokens=200, temperature=0.6):
 # ================= HANDLER =================
 @dp.message(Command("clear"))
 async def clear(message: types.Message):
-    user_history[message.from_user.id] = ""
-    await message.answer("🧹 cleared")
+    user_history.pop(message.from_user.id, None)
+    await message.answer("🧹 История очищена")
 
 
 @dp.message()
 async def chat(message: types.Message):
-
     uid = message.from_user.id
     if uid not in ADMIN_IDS:
         return
 
-    history = user_history.get(uid, "")
+    # Достаем прошлую историю токенов или пустой список
+    history_tokens = user_history.get(uid, [])
 
-    prompt = f"{history}[USER] {message.text}\n[AGENT] "
+    # Формируем новое сообщение в токенах
+    new_prompt_part = f"[USER] {message.text}\n[AGENT] "
+    new_tokens = encode(new_prompt_part)
 
-    tokens = encode(prompt)
-    tokens = tokens[-(BLOCK_SIZE - 200):]
+    # Объединяем историю и новый запрос
+    tokens = history_tokens + new_tokens
+
+    # Безопасно обрезаем по токенам с запасом под ответ
+    max_context_len = BLOCK_SIZE - 200
+    if len(tokens) > max_context_len:
+        tokens = tokens[-max_context_len:]
 
     idx = torch.tensor([tokens], device=DEVICE)
 
+    # Отправляем сообщение для стриминга
     msg = await message.answer("💭 thinking...")
 
     loop = asyncio.get_event_loop()
@@ -125,14 +132,13 @@ async def chat(message: types.Message):
 
     last_text = ""
 
-    for token_buf, _ in results:
-
+    for token_buf, current_idx in results:
         try:
             text = decode(token_buf)
         except:
             continue
 
-        # cleanup (страховка от мусора)
+        # cleanup (страховка от мусора в выводе)
         text = text.replace("[USER]", "").replace("[AGENT]", "").strip()
 
         if text == last_text:
@@ -144,19 +150,31 @@ async def chat(message: types.Message):
             await bot.edit_message_text(
                 chat_id=message.chat.id,
                 message_id=msg.message_id,
-                text=text[-3800:]
+                text=text if text else "..."
             )
         except:
             pass
 
     reply = last_text.strip()
 
-    user_history[uid] = (prompt + reply + "\n")[-2000:]
+    # Если модель ничего не вернула, обновим текст заглушки на многоточие
+    if not reply:
+        try:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=msg.message_id,
+                text="..."
+            )
+        except:
+            pass
 
+    # Сохраняем в историю всю цепочку в виде токенов (включая ответ модели)
+    reply_tokens = encode(reply + "<|endoftext|>\n")
+    user_history[uid] = (tokens + reply_tokens)[-1500:]  # Ограничение по токенам истории
 
 # ================= RUN =================
 async def main():
-    print("🚀 bot running")
+    print("🚀 KV bot running")
     await dp.start_polling(bot)
 
 
